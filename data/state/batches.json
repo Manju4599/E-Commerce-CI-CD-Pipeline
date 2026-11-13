@@ -1,0 +1,11 @@
+{
+    "batches": [
+        {
+            "batch_id": "orders_109_109",
+            "first_id": 109,
+            "last_id": 109,
+            "bronze_status": "completed",
+            "silver_status": "completed"
+        }
+    ]
+}
