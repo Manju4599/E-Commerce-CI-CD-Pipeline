@@ -230,7 +230,7 @@ def run_transformation():
     print(f"Transformation completed : {len(orders)} orders")
     
     
-
+    
 def transform_incremental_orders(batch_file):
     """
     Validate an incremental batch and merge it

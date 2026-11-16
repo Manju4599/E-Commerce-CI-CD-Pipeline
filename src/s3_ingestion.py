@@ -109,7 +109,7 @@ def download_csv(s3_key: str, destination_path: Path):
 
     except ClientError as error:
         raise RuntimeError(
-            f"Unable to find Bronze object: {s3_key}"
+            f"Unable to find S3 object: {s3_key}"
         ) from error
 
     expected_hash = response.get(
@@ -138,8 +138,8 @@ def download_csv(s3_key: str, destination_path: Path):
             destination_path,
         )
     destination_path.parent.mkdir(
-    parents=True,
-    exist_ok=True,
+        parents=True,
+        exist_ok=True,
     )
 
     temp_path = None
