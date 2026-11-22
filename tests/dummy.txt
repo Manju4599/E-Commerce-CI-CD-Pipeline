@@ -1,0 +1,13 @@
+Completed batch + missing manifest → raises BatchStateIntegrityError.
+
+
+
+Completed batch absent from manifest → raises BatchStateIntegrityError.
+
+
+
+Completed batch present + valid artifact → passes.
+
+
+
+Completed batch present + corrupted artifact → raises SilverArtifactIntegrityError.

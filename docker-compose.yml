@@ -1,0 +1,12 @@
+services:
+  pipeline:
+    image: ecommerce-pipeline:latest
+    container_name: ecommerce-pipeline
+    env_file:
+      - .env.docker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: "no"

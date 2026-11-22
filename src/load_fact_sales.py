@@ -1,29 +1,23 @@
-import os
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import text
 
+from config.settings import DB_NAME, WAREHOUSE_DB_NAME
+from src.database import create_db_engine
+
+import logging
+
+logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 
 def make_engine(database):
-    return create_engine(
-        URL.create(
-            "mysql+pymysql",
-            username=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"],
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "3306")),
-            database=database,
-        )
-    )
+    return create_db_engine(database)
 
 
-source_engine = make_engine(os.environ["DB_NAME"])
-warehouse_engine = make_engine("ecommerce_warehouse")
+source_engine = make_engine(DB_NAME)
+warehouse_engine = make_engine(WAREHOUSE_DB_NAME)
 
 
 def load_fact_sales():
@@ -46,7 +40,7 @@ def load_fact_sales():
     sales = pd.read_sql_query(source_query, source_engine)
 
     if sales.empty:
-        print("No order items found. Nothing to load.")
+        logger.info("No order items found. Nothing to load.")
         return
 
     # 2. Retrieve the warehouse surrogate-key mappings.
@@ -152,10 +146,16 @@ def load_fact_sales():
     with warehouse_engine.begin() as connection:
         connection.execute(insert_sql, records)
 
-    print(f"Fact sales load completed: {len(records)} source order lines")
-
+    logger.info(
+        "Fact sales load completed: %d source order lines",
+        len(records),
+    )
 
 if __name__ == "__main__":
+    from src.logging_config import configure_logging
+
+    configure_logging()
+
     try:
         load_fact_sales()
     finally:

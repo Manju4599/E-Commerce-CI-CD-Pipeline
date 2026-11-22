@@ -327,3 +327,166 @@ def test_manifest_write_failure_is_propagated(tmp_path):
             )
 
     mock_upload.assert_called_once()
+
+
+def test_retry_reuses_orphaned_version_after_manifest_failure(tmp_path):
+
+    silver_file = tmp_path / "orders_clean.csv"
+    silver_file.write_text("test data", encoding="utf-8")
+
+    checksum = "a" * 64
+
+    current_manifest = {
+        "silver_version": 1,
+        "file": "silver/orders/orders_v001.csv",
+        "sha256": "b" * 64,
+        "last_processed_order_id": 108,
+        "committed_batches": ["orders_107_108"],
+    }
+
+    existing_object = {
+        "Metadata": {"sha256": checksum}
+    }
+
+    upload_calls = []
+    manifest_calls = []
+
+    def fake_upload(file_path, s3_key):
+        upload_calls.append(s3_key)
+
+    def fake_write_manifest(manifest):
+        manifest_calls.append(manifest)
+
+        if len(manifest_calls) == 1:
+            raise RuntimeError("Simulated manifest failure")
+
+    with (
+        patch(
+            "src.silver_versioning.calculate_sha256",
+            return_value=checksum,
+        ),
+        patch(
+            "src.silver_versioning.read_silver_manifest",
+            return_value=current_manifest,
+        ),
+        patch(
+            "src.silver_versioning.s3.head_object",
+            side_effect=[
+                make_missing_object_error(),
+                existing_object,
+            ],
+        ),
+        patch(
+            "src.silver_versioning.upload_csv",
+            side_effect=fake_upload,
+        ),
+        patch(
+            "src.silver_versioning.verify_silver_artifact",
+            return_value=True,
+        ) as mock_verify,
+        patch(
+            "src.silver_versioning.write_silver_manifest",
+            side_effect=fake_write_manifest,
+        ),
+    ):
+
+        # First attempt: upload succeeds, manifest fails.
+        with pytest.raises(
+            RuntimeError,
+            match="Simulated manifest failure",
+        ):
+            publish_versioned_silver(
+                silver_file,
+                [make_batch()],
+            )
+
+        assert len(upload_calls) == 1
+
+        # Second attempt: existing artifact is reused.
+        result = publish_versioned_silver(
+            silver_file,
+            [make_batch()],
+        )
+
+    assert result["silver_version"] == 2
+
+    assert result["file"] == (
+        "silver/orders/orders_v002.csv"
+    )
+
+    assert "orders_109_110" in result["committed_batches"]
+
+    # Only the first attempt uploads.
+    assert upload_calls == [
+        "silver/orders/orders_v002.csv"
+    ]
+
+    # Manifest writing is attempted twice.
+    assert len(manifest_calls) == 2
+
+    # Both attempts verify the artifact before manifest publication.
+    assert mock_verify.call_count == 2
+
+    assert manifest_calls[1] == result
+
+
+    silver_file = tmp_path / "orders_clean.csv"
+    silver_file.write_text("test data", encoding="utf-8")
+
+    checksum = "a" * 64
+
+    current_manifest = {
+        "silver_version": 1,
+        "file": "silver/orders/orders_v001.csv",
+        "sha256": "b" * 64,
+        "last_processed_order_id": 108,
+        "committed_batches": ["orders_107_108"],
+    }
+
+    existing_object = {
+        "Metadata": {"sha256": checksum}
+    }
+
+    with (
+        patch(
+            "src.silver_versioning.calculate_sha256",
+            return_value=checksum,
+        ),
+        patch(
+            "src.silver_versioning.read_silver_manifest",
+            return_value=current_manifest,
+        ),
+        patch(
+            "src.silver_versioning.s3.head_object",
+            return_value=existing_object,
+        ),
+        patch(
+            "src.silver_versioning.upload_csv",
+        ) as mock_upload,
+        patch(
+            "src.silver_versioning.verify_silver_artifact",
+            return_value=True,
+        ),
+        patch(
+            "src.silver_versioning.write_silver_manifest",
+        ) as mock_write,
+    ):
+
+        result = publish_versioned_silver(
+            silver_file,
+            [make_batch()],
+        )
+
+    assert result["silver_version"] == 2
+
+    assert result["file"] == (
+        "silver/orders/orders_v002.csv"
+    )
+
+    assert "orders_109_110" in result["committed_batches"]
+
+    # Reuse the existing orphan instead of uploading again.
+    mock_upload.assert_not_called()
+
+    # Successfully publish the new manifest.
+    mock_write.assert_called_once_with(result)

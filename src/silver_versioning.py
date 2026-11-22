@@ -1,6 +1,7 @@
 
 import hashlib
 import hmac
+import logging
 from botocore.exceptions import ClientError
 from pathlib import Path
 from src.s3_ingestion import (
@@ -13,6 +14,10 @@ from src.silver_manifest import (
     read_silver_manifest,
     write_silver_manifest,
 )
+
+
+
+logger = logging.getLogger(__name__)
 
 def verify_silver_artifact(manifest):
     """
@@ -89,7 +94,13 @@ def verify_silver_artifact(manifest):
     )
 
 
-def publish_versioned_silver(file_path, processed_batches):
+
+def publish_versioned_silver(
+    file_path,
+    processed_batches,
+    manifest_key="silver/orders/manifest.json",
+    silver_prefix="silver/orders",
+):
     """
     Publish a new immutable Silver version.
 
@@ -103,15 +114,14 @@ def publish_versioned_silver(file_path, processed_batches):
         )
 
     if not processed_batches:
-        raise ValueError(
-            "No processed batches supplied."
-        )
+        raise ValueError("No processed batches supplied.")
 
-    # Step 1: Calculate the local artifact checksum.
     local_hash = calculate_sha256(file_path)
 
-    # Step 2: Read the current committed manifest.
-    current_manifest = read_silver_manifest()
+    if manifest_key == "silver/orders/manifest.json":
+        current_manifest = read_silver_manifest()
+    else:
+        current_manifest = read_silver_manifest(manifest_key)
 
     if current_manifest is None:
         version = 1
@@ -119,19 +129,18 @@ def publish_versioned_silver(file_path, processed_batches):
         last_processed_id = 0
     else:
         version = current_manifest["silver_version"] + 1
-
-        committed_batches = current_manifest["committed_batches"]
-
+        committed_batches = list(
+            current_manifest["committed_batches"]
+        )
         last_processed_id = current_manifest[
             "last_processed_order_id"
         ]
 
-    # Step 3: Generate a new immutable S3 key.
     s3_key = (
-        f"silver/orders/orders_v{version:03d}.csv"
+        f"{silver_prefix.rstrip('/')}/"
+        f"orders_v{version:03d}.csv"
     )
 
-    # Step 4: Do not overwrite an existing version.
     try:
         existing = s3.head_object(
             Bucket=BUCKET_NAME,
@@ -158,11 +167,9 @@ def publish_versioned_silver(file_path, processed_batches):
                 f"Immutable Silver version already exists "
                 f"with different content: {s3_key}"
             )
-
     else:
         upload_csv(file_path, s3_key)
 
-    # Step 5: Build the candidate manifest.
     for batch in processed_batches:
         batch_id = batch["batch_id"]
 
@@ -182,17 +189,19 @@ def publish_versioned_silver(file_path, processed_batches):
         "committed_batches": committed_batches,
     }
 
-    # Step 6: Verify actual S3 object bytes.
     if not verify_silver_artifact(new_manifest):
         raise RuntimeError(
             f"Silver artifact verification failed: {s3_key}"
         )
 
-    # Step 7: Publish the manifest as the commit record.
-    write_silver_manifest(new_manifest)
+    if manifest_key == "silver/orders/manifest.json":
+        write_silver_manifest(new_manifest)
+    else:
+        write_silver_manifest(new_manifest, manifest_key)
 
-    print(
-        f"Silver version {version} committed successfully."
+    logger.info(
+        "Silver version %d committed successfully.",
+        version,
     )
 
     return new_manifest

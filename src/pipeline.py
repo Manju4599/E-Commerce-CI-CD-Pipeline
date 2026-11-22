@@ -1,36 +1,39 @@
+
 import logging
 
+from src.logging_config import configure_logging
 from src.extract import extract_tables
 from src.transform import run_transformation
-from src.s3_ingestion import (upload_bronze_files,  upload_silver_orders)
+from src.s3_ingestion import upload_bronze_files, upload_silver_orders
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+
+logger = logging.getLogger(__name__)
+
 
 def main():
-    logging.info("Pipeline Started !")
-    
+    configure_logging()
+
+    logger.info("Pipeline started")
+
     try:
         extract_tables()
-        logging.info("Exctraction completed !")
-        
+        logger.info("Extraction completed")
+
         upload_bronze_files()
-        logging.info("Bronze INgestion completed !")
-        
+        logger.info("Bronze ingestion completed")
+
         run_transformation()
-        logging.info("Transformation and validation completed !")
-        
+        logger.info("Transformation and validation completed")
+
         upload_silver_orders()
-        logging.info("Silver ingestion completed !")
-        
-        logging.info("Pipeline completed succesfully !")
-        
+        logger.info("Silver ingestion completed")
+
+        logger.info("Pipeline completed successfully")
+
     except Exception:
-        
-        logging.info("Pipeline Failed !")
+        logger.exception("Pipeline failed")
         raise
-    
+
+
 if __name__ == "__main__":
     main()

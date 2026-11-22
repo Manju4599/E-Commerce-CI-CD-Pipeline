@@ -1,9 +1,7 @@
-
 import pandas as pd
 import pytest
-
 from unittest.mock import patch
-
+import json
 from src.incremental_ingestion import ingest_incremental_orders
 
 
@@ -441,3 +439,186 @@ def test_failed_atomic_write_preserves_existing_silver(tmp_path):
     hidden_temp_files = list(tmp_path.glob(".*.tmp"))
 
     assert len(temp_files) + len(hidden_temp_files) == 0
+
+def test_watermark_failure_after_bronze_upload_preserves_batch_for_retry(
+    tmp_path,
+):
+    batch = make_batch()
+    events = []
+
+    def fake_upload(file_path, s3_key):
+        events.append("bronze_upload")
+
+    def fake_register(first_id, last_id):
+        events.append("register")
+
+    def fake_update(batch_id, stage, status):
+        events.append("bronze_completed")
+
+    def fake_save(table_name, last_id):
+        events.append("watermark_save")
+        raise RuntimeError("Simulated watermark failure")
+
+    with (
+        patch(
+            "src.incremental_ingestion.extract_new_orders",
+            return_value=(batch, 106),
+        ),
+        patch(
+            "src.incremental_ingestion.PROJECT_ROOT",
+            tmp_path,
+        ),
+        patch(
+            "src.incremental_ingestion.recover_pending_silver_batches",
+        ) as mock_recovery,
+        patch(
+            "src.incremental_ingestion.upload_csv",
+            side_effect=fake_upload,
+        ),
+        patch(
+            "src.incremental_ingestion.register_batch",
+            side_effect=fake_register,
+        ),
+        patch(
+            "src.incremental_ingestion.update_batch_status",
+            side_effect=fake_update,
+        ),
+        patch(
+            "src.incremental_ingestion.save_watermark",
+            side_effect=fake_save,
+        ) as mock_save,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="Simulated watermark failure",
+        ):
+            ingest_incremental_orders()
+
+    assert events == [
+        "bronze_upload",
+        "register",
+        "bronze_completed",
+        "watermark_save",
+    ]
+
+    mock_save.assert_called_once_with("orders_bronze", 106)
+
+    # Recovery must not run after the watermark failure.
+    mock_recovery.assert_called_once_with()
+
+
+def test_retry_after_watermark_failure_preserves_persistent_batch_state(
+    tmp_path, monkeypatch
+):
+
+
+    from src.batch_state import load_batch_state
+    from src.watermark import (
+        load_watermark,
+        save_watermark as persist_watermark,
+    )
+
+    batch_state_file = tmp_path / "batches.json"
+    watermark_file = tmp_path / "watermarks.json"
+
+    watermark_file.write_text(
+        json.dumps({"orders_bronze": 110}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "src.batch_state.BATCH_STATE_FILE",
+        batch_state_file,
+    )
+    monkeypatch.setattr(
+        "src.watermark.WATERMARK_FILE",
+        watermark_file,
+    )
+
+    batch = pd.DataFrame({
+        "order_id": [111],
+        "customer_id": [1],
+        "order_date": ["2026-11-20"],
+        "amount": [1200.00],
+    })
+
+    upload_calls = []
+    recovery_calls = []
+    watermark_attempts = 0
+
+    def fake_upload(file_path, s3_key):
+        upload_calls.append(s3_key)
+
+    def fake_save_watermark(table_name, last_id):
+        nonlocal watermark_attempts
+        watermark_attempts += 1
+
+        if watermark_attempts == 1:
+            raise RuntimeError("Simulated watermark failure")
+
+        persist_watermark(table_name, last_id)
+
+    with (
+        patch(
+            "src.incremental_ingestion.extract_new_orders",
+            return_value=(batch, 111),
+        ),
+        patch(
+            "src.incremental_ingestion.PROJECT_ROOT",
+            tmp_path,
+        ),
+        patch(
+            "src.incremental_ingestion.upload_csv",
+            side_effect=fake_upload,
+        ),
+        patch(
+            "src.incremental_ingestion.recover_pending_silver_batches",
+            side_effect=lambda: recovery_calls.append("recovery"),
+        ),
+        patch(
+            "src.incremental_ingestion.save_watermark",
+            side_effect=fake_save_watermark,
+        ),
+    ):
+        # First attempt: Bronze and ledger succeed; watermark fails.
+        with pytest.raises(
+            RuntimeError,
+            match="Simulated watermark failure",
+        ):
+            ingest_incremental_orders()
+
+        # Verify persistent state after the failure.
+        state_after_failure = load_batch_state()
+
+        assert state_after_failure["batches"][0]["batch_id"] == (
+            "orders_111_111"
+        )
+        assert state_after_failure["batches"][0]["bronze_status"] == (
+            "completed"
+        )
+        assert state_after_failure["batches"][0]["silver_status"] == (
+            "pending"
+        )
+        assert load_watermark("orders_bronze") == 110
+
+        # Second attempt: same batch is retried successfully.
+        result = ingest_incremental_orders()
+
+    assert result == 111
+    assert load_watermark("orders_bronze") == 111
+
+    final_state = load_batch_state()
+    assert len(final_state["batches"]) == 1
+    assert final_state["batches"][0]["batch_id"] == "orders_111_111"
+    assert final_state["batches"][0]["bronze_status"] == "completed"
+    assert final_state["batches"][0]["silver_status"] == "pending"
+
+    # Both attempts target the same Bronze object.
+    assert upload_calls == [
+        "bronze/orders/incremental/orders_111_111.csv",
+        "bronze/orders/incremental/orders_111_111.csv",
+    ]
+
+    # Initial recovery on both attempts, plus recovery after successful retry.
+    assert len(recovery_calls) == 3
+    assert watermark_attempts == 2

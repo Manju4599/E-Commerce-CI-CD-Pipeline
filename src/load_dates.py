@@ -1,29 +1,19 @@
-import os
-from pathlib import Path
-
+import logging
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import text
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
+from config.settings import DB_NAME, WAREHOUSE_DB_NAME
+from src.database import create_db_engine
+
+logger = logging.getLogger(__name__)
 
 
 def make_engine(database):
-    return create_engine(
-        URL.create(
-            "mysql+pymysql",
-            username=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"],
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "3306")),
-            database=database,
-        )
-    )
+    return create_db_engine(database)
 
 
-source_engine = make_engine(os.environ["DB_NAME"])
-warehouse_engine = make_engine("ecommerce_warehouse")
+source_engine = make_engine(DB_NAME)
+warehouse_engine = make_engine(WAREHOUSE_DB_NAME)
 
 
 def load_dates():
@@ -62,10 +52,17 @@ def load_dates():
             row["full_date"] = row.pop("order_date").date()
             connection.execute(sql, row)
 
-    print(f"Date dimension loaded: {len(dates)} distinct dates")
+    logger.info(
+        "Date dimension loaded: %d distinct dates",
+        len(dates),
+    )
 
 
 if __name__ == "__main__":
+    from src.logging_config import configure_logging
+
+    configure_logging()
+
     try:
         load_dates()
     finally:

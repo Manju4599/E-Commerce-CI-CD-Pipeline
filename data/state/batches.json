@@ -6,6 +6,13 @@
             "last_id": 109,
             "bronze_status": "completed",
             "silver_status": "completed"
+        },
+        {
+            "batch_id": "orders_110_110",
+            "first_id": 110,
+            "last_id": 110,
+            "bronze_status": "completed",
+            "silver_status": "completed"
         }
     ]
 }

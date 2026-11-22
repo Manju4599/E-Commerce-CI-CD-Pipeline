@@ -1,7 +1,12 @@
+
+import logging
+import tempfile
 from pathlib import Path
 
 import pandas as pd
-import tempfile
+
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
@@ -32,14 +37,20 @@ def validate_orders(df):
     if (df["amount"] < 0).any():
         raise ValueError("Found negative order amounts")
 
-    df["order_date"] = pd.to_datetime(df["order_date"], errors="raise")
+    df["order_date"] = pd.to_datetime(
+        df["order_date"],
+        errors="raise",
+    )
 
     return df
+
 
 def validate_customer_references(orders, customers):
     valid_customer_ids = set(customers["customer_id"])
 
-    invalid_orders = orders[~ orders["customer_id"].isin(valid_customer_ids)]
+    invalid_orders = orders[
+        ~orders["customer_id"].isin(valid_customer_ids)
+    ]
 
     if not invalid_orders.empty:
         raise ValueError(
@@ -47,55 +58,68 @@ def validate_customer_references(orders, customers):
             "referencing nonexistent customers"
         )
 
-    print("Customer reference validation passed")
+    logger.info("Customer reference validation passed")
 
 
-def load_validated_incremental_batch(batch_file):
-    """
-    Read an incremental orders batch and validate its data.
-    """
-
+def load_validated_incremental_batch(
+    batch_file,
+    customers_file=None,
+):
     batch_file = Path(batch_file)
 
-    # Check whether the batch file exists
     if not batch_file.exists():
         raise FileNotFoundError(
             f"Incremental batch not found: {batch_file}"
         )
 
-    # Read new orders from the batch
+    if customers_file is None:
+        customers_file = RAW_DIR / "customers.csv"
+
+    customers_file = Path(customers_file)
+
+    if not customers_file.exists():
+        raise FileNotFoundError(
+            f"Customer snapshot not found: {customers_file}"
+        )
+
     orders = pd.read_csv(batch_file)
+    customers = pd.read_csv(customers_file)
 
-    # Read the customer snapshot
-    customers = pd.read_csv(RAW_DIR / "customers.csv")
-
-    # Apply existing validation rules
     orders = validate_orders(orders)
     validate_customer_references(orders, customers)
 
-    print(
-        f"Incremental batch validation passed: {len(orders)} orders"
+    logger.info(
+        "Incremental batch validation passed: %d orders",
+        len(orders),
     )
 
     return orders
 
 
-def merge_incremental_orders(new_orders):
+def merge_incremental_orders(
+    new_orders,
+    processed_dir=None,
+):
     """
     Merge validated incremental orders into the consolidated
     Silver orders file without creating duplicate order IDs.
     """
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    if processed_dir is None:
+        processed_dir = PROCESSED_DIR
 
-    output_path = PROCESSED_DIR / "orders_clean.csv"
+    processed_dir = Path(processed_dir)
+
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    output_path = processed_dir / "orders_clean.csv"
 
     # First-ever Silver load
     if not output_path.exists():
         write_csv_atomically(new_orders, output_path)
 
-        print(
-            f"Silver file created with {len(new_orders)} orders"
+        logger.info(
+            "Silver file created with %d orders",
+            len(new_orders),
         )
 
         return new_orders
@@ -109,7 +133,9 @@ def merge_incremental_orders(new_orders):
 
     # Ensure both datasets have the same schema
     if set(existing_orders.columns) != set(new_orders.columns):
-        raise ValueError("Schema mismatch between existing and new orders")
+        raise ValueError(
+            "Schema mismatch between existing and new orders"
+        )
 
     # Align column order
     existing_orders = existing_orders[new_orders.columns]
@@ -137,12 +163,12 @@ def merge_incremental_orders(new_orders):
             .sort_values("order_id")
             .reset_index(drop=True)
         )
-        
+
         try:
             pd.testing.assert_frame_equal(
                 existing_overlap,
                 new_overlap,
-                check_dtype=False
+                check_dtype=False,
             )
         except AssertionError as exc:
             raise ValueError(
@@ -157,7 +183,7 @@ def merge_incremental_orders(new_orders):
     # Combine historical and new records
     merged_orders = pd.concat(
         [existing_orders, new_only],
-        ignore_index=True
+        ignore_index=True,
     )
 
     # Maintain consistent order
@@ -170,10 +196,11 @@ def merge_incremental_orders(new_orders):
     # Save consolidated Silver data
     write_csv_atomically(merged_orders, output_path)
 
-    print(
-        f"Silver merge completed: "
-        f"{len(new_only)} new orders added, "
-        f"{len(merged_orders)} total orders"
+    logger.info(
+        "Silver merge completed: %d new orders added, "
+        "%d total orders",
+        len(new_only),
+        len(merged_orders),
     )
 
     return merged_orders
@@ -189,28 +216,22 @@ def write_csv_atomically(df, output_path):
 
     output_path.parent.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
-    # Create a temporary file in the same directory
     with tempfile.NamedTemporaryFile(
         dir=output_path.parent,
         prefix=f".{output_path.stem}_",
         suffix=".tmp",
-        delete=False
+        delete=False,
     ) as temp_file:
-
         temp_path = Path(temp_file.name)
 
     try:
-        # Write the complete DataFrame to the temporary file
         df.to_csv(temp_path, index=False)
-
-        # Replace the destination after successful writing
         temp_path.replace(output_path)
 
     finally:
-        # Remove temporary file if it still exists
         if temp_path.exists():
             temp_path.unlink()
 
@@ -220,41 +241,38 @@ def run_transformation():
 
     orders = pd.read_csv(RAW_DIR / "orders.csv")
     customers = pd.read_csv(RAW_DIR / "customers.csv")
-    
+
     orders = validate_orders(orders)
     validate_customer_references(orders, customers)
-    
+
     output_path = PROCESSED_DIR / "orders_clean.csv"
     orders.to_csv(output_path, index=False)
 
-    print(f"Transformation completed : {len(orders)} orders")
-    
-    
-    
-def transform_incremental_orders(batch_file):
-    """
-    Validate an incremental batch and merge it
-    into the consolidated Silver dataset.
-    """
+    logger.info(
+        "Transformation completed: %d orders",
+        len(orders),
+    )
 
-    # Step 1: Load and validate the batch
+
+def transform_incremental_orders(
+    batch_file,
+    processed_dir=None,
+    customers_file=None,
+):
     validated_orders = load_validated_incremental_batch(
-        batch_file
+        batch_file,
+        customers_file,
     )
 
-    # Step 2: Merge with historical Silver orders
     merged_orders = merge_incremental_orders(
-        validated_orders
+        validated_orders,
+        processed_dir,
     )
 
-    print(
-        f"Incremental transformation completed: "
-        f"{len(merged_orders)} total Silver orders"
+    logger.info(
+        "Incremental transformation completed: "
+        "%d total Silver orders",
+        len(merged_orders),
     )
 
     return merged_orders
-
-
-if __name__ == "__main__":
-    run_transformation()
-    

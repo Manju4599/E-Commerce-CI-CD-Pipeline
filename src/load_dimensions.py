@@ -1,37 +1,19 @@
-import os
-from pathlib import Path
-
+import logging
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import text
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
+from config.settings import DB_NAME, WAREHOUSE_DB_NAME
+from src.database import create_db_engine
+
+logger = logging.getLogger(__name__)
+
 
 def make_engine():
-    return create_engine(
-        URL.create(
-            "mysql+pymysql",
-            username=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"],
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "3306")),
-            database=os.environ["DB_NAME"],
-        )
-    )
+    return create_db_engine(DB_NAME)
+
 
 source_engine = make_engine()
-
-warehouse_engine = create_engine(
-    URL.create(
-        "mysql+pymysql",
-        username=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        host=os.environ.get("DB_HOST", "localhost"),
-        port=int(os.environ.get("DB_PORT", "3306")),
-        database="ecommerce_warehouse",
-    )
-)
+warehouse_engine = create_db_engine(WAREHOUSE_DB_NAME)
 
 
 def load_customers():
@@ -53,7 +35,10 @@ def load_customers():
                 row,
             )
 
-    print(f"Customer dimension loaded: {len(df)} source rows")
+    logger.info(
+        "Customer dimension loaded: %d source rows",
+        len(df),
+    )
 
 
 def load_products():
@@ -73,20 +58,26 @@ def load_products():
                         (:product_id, :product_name, :price, :stock)
                     ON DUPLICATE KEY UPDATE
                         product_name = VALUES(product_name),
-                        current_price = VALUES(current_price),
-                        current_stock = VALUES(current_stock)
+                        current_price = VALUES(price),
+                        current_stock = VALUES(stock)
                 """),
                 row,
             )
 
-    print(f"Product dimension loaded: {len(df)} source rows")
+    logger.info(
+        "Product dimension loaded: %d source rows",
+        len(df),
+    )
 
 
 if __name__ == "__main__":
+    from src.logging_config import configure_logging
+
+    configure_logging()
+
     try:
         load_customers()
         load_products()
     finally:
         source_engine.dispose()
-        warehouse_engine.dispose()
-        
+        warehouse_engine.dispose()  

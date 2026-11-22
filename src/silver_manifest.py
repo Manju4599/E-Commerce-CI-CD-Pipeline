@@ -1,6 +1,5 @@
 
 import json
-
 from botocore.exceptions import ClientError
 
 from src.s3_ingestion import s3, BUCKET_NAME
@@ -9,21 +8,16 @@ from src.s3_ingestion import s3, BUCKET_NAME
 MANIFEST_KEY = "silver/orders/manifest.json"
 
 
-def read_silver_manifest():
-    """
-    Read the latest committed Silver manifest from S3.
-
-    Returns None if no manifest exists yet.
-    """
-
+def read_silver_manifest(
+    manifest_key: str = MANIFEST_KEY,
+):
     try:
         response = s3.get_object(
             Bucket=BUCKET_NAME,
-            Key=MANIFEST_KEY,
+            Key=manifest_key,
         )
 
     except ClientError as error:
-
         error_code = error.response.get(
             "Error", {}
         ).get("Code")
@@ -40,11 +34,10 @@ def read_silver_manifest():
     )
 
 
-def write_silver_manifest(manifest):
-    """
-    Publish the latest committed Silver manifest.
-    """
-
+def write_silver_manifest(
+    manifest,
+    manifest_key: str = MANIFEST_KEY,
+):
     required_fields = {
         "silver_version",
         "file",
@@ -62,7 +55,7 @@ def write_silver_manifest(manifest):
 
     s3.put_object(
         Bucket=BUCKET_NAME,
-        Key=MANIFEST_KEY,
+        Key=manifest_key,
         Body=json.dumps(
             manifest,
             indent=4,

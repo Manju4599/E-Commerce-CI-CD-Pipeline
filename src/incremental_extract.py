@@ -1,27 +1,20 @@
+
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import URL, create_engine, text
-from dotenv import load_dotenv
-import os
+from sqlalchemy import text
+import logging
+from src.database import create_db_engine
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 STATE_DIR = PROJECT_ROOT / "state"
 STATE_FILE = STATE_DIR / "last_order_id.txt"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "raw" / "incremental"
 
-engine = create_engine(
-    URL.create(
-        "mysql+pymysql",
-        username=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        host=os.environ.get("DB_HOST", "localhost"),
-        port=int(os.environ.get("DB_PORT", "3306")),
-        database=os.environ["DB_NAME"],
-    )
-)
+engine = create_db_engine()
 
 
 def main():
@@ -43,7 +36,7 @@ def main():
         )
 
     if df.empty:
-        print(f"No new orders. Watermark remains {last_id}.")
+        logger.info("No new orders. Watermark remains %d.", last_id)
         return
 
     output_file = OUTPUT_DIR / "new_orders.csv"
@@ -54,13 +47,21 @@ def main():
     temp_file.write_text(str(new_watermark))
     temp_file.replace(STATE_FILE)
 
-    print(f"Extracted {len(df)} new orders.")
-    print(f"Saved to: {output_file}")
-    print(f"Watermark updated: {last_id} -> {new_watermark}")
+    logger.info("Extracted %d new orders.", len(df))
+    logger.info("Saved to: %s", output_file)
+    logger.info(
+        "Watermark updated: %d -> %d",
+        last_id,
+        new_watermark,
+    )
 
 
 if __name__ == "__main__":
-    try:    
+    from src.logging_config import configure_logging
+
+    configure_logging()
+
+    try:
         main()
     finally:
-        engine.dispose()    
+        engine.dispose()

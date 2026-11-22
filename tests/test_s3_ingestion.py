@@ -4,7 +4,7 @@ from unittest.mock import patch
 from botocore.exceptions import ClientError
 import pytest
 
-from src.s3_ingestion import upload_csv, upload_bronze_files, BUCKET_NAME
+from src.s3_ingestion import upload_csv, download_csv, upload_bronze_files, BUCKET_NAME
 from src.file_integrity import calculate_sha256
 from pathlib import Path
 
@@ -376,3 +376,44 @@ def test_download_csv_rejects_corrupted_file(tmp_path):
             )
 
     assert not destination.exists()
+    
+
+
+def test_corrupted_download_preserves_existing_destination(tmp_path):
+    destination = tmp_path / "orders.csv"
+    destination.write_text(
+        "order_id,amount\n1,100\n",
+        encoding="utf-8",
+    )
+
+    original_content = destination.read_bytes()
+
+    def fake_download_file(bucket, key, filename):
+        Path(filename).write_bytes(
+            b"corrupted,data\n999,999\n"
+        )
+
+    with (
+        patch("src.s3_ingestion.s3.head_object") as mock_head,
+        patch(
+            "src.s3_ingestion.s3.download_file",
+            side_effect=fake_download_file,
+        ),
+    ):
+        mock_head.return_value = {
+            "Metadata": {
+                "sha256": "a" * 64
+            }
+        }
+
+        with pytest.raises(
+            RuntimeError,
+            match="SHA-256 verification failed",
+        ):
+            download_csv(
+                "integration-tests/bronze/orders_test_python.csv",
+                destination,
+            )
+
+    assert destination.read_bytes() == original_content
+    assert list(tmp_path.glob(".bronze_*.tmp")) == []

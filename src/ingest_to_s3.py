@@ -5,37 +5,32 @@ import logging
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-
-# 1. Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+from config.settings import (
+    PROJECT_ROOT,
+    S3_BUCKET_NAME,
+    AWS_ENDPOINT_URL,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_DEFAULT_REGION,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# 2. Define source and destination
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 SOURCE_FILE = PROJECT_ROOT / "verify_order.csv"
-BUCKET_NAME = "de-learning-lake"
+BUCKET_NAME = S3_BUCKET_NAME
 S3_KEY = "bronze/orders"
 
-
-# 3. Create the S3 client
 s3 = boto3.client(
     "s3",
-    endpoint_url="http://localhost.floci.io:4566",
-    aws_access_key_id="test",
-    aws_secret_access_key="test",
-    region_name="us-east-1",
+    endpoint_url=AWS_ENDPOINT_URL,
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_DEFAULT_REGION,
 )
 
 
 def ingest_csv():
     try:
-        # Validate the input file
         if not SOURCE_FILE.is_file():
             raise FileNotFoundError(
                 f"Source file not found: {SOURCE_FILE}"
@@ -44,7 +39,6 @@ def ingest_csv():
         logger.info("Starting S3 ingestion")
         logger.info("Source file: %s", SOURCE_FILE)
 
-        # Upload the CSV
         s3.upload_file(
             str(SOURCE_FILE),
             BUCKET_NAME,
@@ -52,7 +46,6 @@ def ingest_csv():
             ExtraArgs={"ContentType": "text/csv"},
         )
 
-        # Verify the uploaded object's metadata
         result = s3.head_object(
             Bucket=BUCKET_NAME,
             Key=S3_KEY,
@@ -73,4 +66,7 @@ def ingest_csv():
 
 
 if __name__ == "__main__":
+    from src.logging_config import configure_logging
+
+    configure_logging()
     ingest_csv()

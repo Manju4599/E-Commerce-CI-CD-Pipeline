@@ -1,29 +1,33 @@
-
 import logging
-import os
-from pathlib import Path
-from src.file_integrity import calculate_sha256
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+from pathlib import Path
+from botocore.exceptions import ClientError
 
+from config.settings import (
+    PROJECT_ROOT,
+    RAW_DIR,
+    PROCESSED_DIR,
+    S3_BUCKET_NAME,
+    AWS_ENDPOINT_URL,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_DEFAULT_REGION,
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+from src.file_integrity import calculate_sha256
 
-BUCKET_NAME = "de-learning-lake"
+logger = logging.getLogger(__name__)
 
-# Use local Floci settings by default.
-# These can be overridden through environment variables.
+# Preserve existing names used by other modules and tests.
+BUCKET_NAME = S3_BUCKET_NAME
+
+# Centralized S3 client configuration.
 s3 = boto3.client(
     "s3",
-    endpoint_url=os.getenv(
-        "AWS_ENDPOINT_URL",
-        "http://localhost.floci.io:4566",
-    ),
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "test"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "test"),
-    region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+    endpoint_url=AWS_ENDPOINT_URL,
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_DEFAULT_REGION,
 )
 
 
@@ -56,7 +60,7 @@ def upload_csv(file_path: Path, s3_key: str):
         existing is not None
         and existing.get("Metadata", {}).get("sha256") == local_hash
     ):
-        logging.info(
+        logger.info(
             "Skipping unchanged file: s3://%s/%s",
             BUCKET_NAME,
             s3_key,
@@ -87,7 +91,7 @@ def upload_csv(file_path: Path, s3_key: str):
             f"SHA-256 metadata verification failed for {s3_key}"
         )
 
-    logging.info(
+    logger.info(
         "Uploaded %s to s3://%s/%s (%s bytes)",
         file_path.name,
         BUCKET_NAME,
@@ -127,13 +131,13 @@ def download_csv(s3_key: str, destination_path: Path):
         local_hash = calculate_sha256(destination_path)
 
         if local_hash == expected_hash:
-            logging.info(
+            logger.info(
                 "Using verified local Bronze file: %s",
                 destination_path,
             )
             return destination_path
 
-        logging.warning(
+        logger.warning(
             "Local Bronze checksum mismatch: %s",
             destination_path,
         )
@@ -169,7 +173,7 @@ def download_csv(s3_key: str, destination_path: Path):
         # Publish only after successful verification.
         temp_path.replace(destination_path)
 
-        logging.info(
+        logger.info(
             "Downloaded and verified Bronze file: %s",
             destination_path,
         )

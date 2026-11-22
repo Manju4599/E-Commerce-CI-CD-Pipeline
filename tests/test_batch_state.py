@@ -334,3 +334,77 @@ def test_pending_silver_batches_are_sorted_by_first_id(tmp_path):
     assert [
         batch["first_id"] for batch in result
     ] == [107, 109, 111]
+    
+def test_register_batch_rejects_invalid_ids():
+
+    with pytest.raises(ValueError):
+        register_batch(0, 10)
+
+    with pytest.raises(TypeError):
+        register_batch("110", 110)  
+        
+def test_duplicate_registration_preserves_completed_status():
+
+    existing_batch = {
+        "batch_id": "orders_110_110",
+        "first_id": 110,
+        "last_id": 110,
+        "bronze_status": "completed",
+        "silver_status": "completed",
+    }
+
+    with patch(
+        "src.batch_state.load_batch_state",
+        return_value={"batches": [existing_batch]},
+    ), patch(
+        "src.batch_state.save_batch_state",
+    ) as mock_save:
+
+        result = register_batch(110, 110)
+
+    assert result["silver_status"] == "completed"
+    mock_save.assert_not_called()
+
+
+def test_completed_status_cannot_be_downgraded():
+    existing_batch = {
+        "batch_id": "orders_109_109",
+        "first_id": 109,
+        "last_id": 109,
+        "bronze_status": "completed",
+        "silver_status": "completed",
+    }
+
+    with patch(
+        "src.batch_state.load_batch_state",
+        return_value={"batches": [existing_batch]},
+    ), patch("src.batch_state.save_batch_state") as mock_save:
+
+        with pytest.raises(ValueError, match="Cannot downgrade"):
+            update_batch_status(
+                "orders_109_109", "silver", "pending"
+            )
+
+        mock_save.assert_not_called()
+
+
+def test_repeating_completed_status_is_idempotent():
+    existing_batch = {
+        "batch_id": "orders_109_109",
+        "first_id": 109,
+        "last_id": 109,
+        "bronze_status": "completed",
+        "silver_status": "completed",
+    }
+
+    with patch(
+        "src.batch_state.load_batch_state",
+        return_value={"batches": [existing_batch]},
+    ), patch("src.batch_state.save_batch_state") as mock_save:
+
+        result = update_batch_status(
+            "orders_109_109", "bronze", "completed"
+        )
+
+        assert result["bronze_status"] == "completed"
+        mock_save.assert_not_called()
