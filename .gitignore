@@ -24,3 +24,6 @@ data/integration_tests_v3/
 
 # Temporary verification files
 persistence-check.txt
+
+#AWS CREDENTIALS
+aws_login.txt
