@@ -52,9 +52,13 @@ def test_upload_calls_s3_and_verifies_metadata(tmp_path):
         Key="bronze/orders/orders.csv",
     )
 
+
 def test_s3_upload_error_is_propagated(tmp_path):
     csv_file = tmp_path / "orders.csv"
-    csv_file.write_text("order_id,amount\n101,500\n", encoding="utf-8")
+    csv_file.write_text(
+        "order_id,amount\n101,500\n",
+        encoding="utf-8",
+    )
 
     error_response = {
         "Error": {
@@ -66,11 +70,30 @@ def test_s3_upload_error_is_propagated(tmp_path):
     error = ClientError(error_response, "PutObject")
 
     with patch(
-        "src.s3_ingestion.s3.upload_file",
-        side_effect=error,
+        "src.s3_ingestion.s3.head_object",
+        side_effect=ClientError(
+            {
+                "Error": {
+                    "Code": "404",
+                    "Message": "Object not found",
+                }
+            },
+            "HeadObject",
+        ),
     ):
-        with pytest.raises(ClientError):
-            upload_csv(csv_file, "bronze/orders/orders.csv")
+        with patch(
+            "src.s3_ingestion.s3.upload_file",
+            side_effect=error,
+        ) as mock_upload:
+            with pytest.raises(ClientError) as exc_info:
+                upload_csv(
+                    csv_file,
+                    "bronze/orders/orders.csv",
+                )
+
+            assert exc_info.value.response["Error"]["Code"] == "ServiceUnavailable"
+            mock_upload.assert_called_once()
+
 
 def test_upload_calls_s3_and_verifies_metadata(tmp_path):
     
