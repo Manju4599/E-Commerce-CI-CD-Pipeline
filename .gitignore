@@ -1,5 +1,26 @@
+
+# Environment and secrets
 .env
-.env.docker
+.env.*
+!.env.example
+
+# Python
 .venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Logs
 logs/
+
+# Generated pipeline data
+data/raw/
+data/processed/
+data/state/
+data/integration_tests_v2/state/
+data/integration_tests_v2/processed/
+data/integration_tests_v2/raw/
+data/integration_tests_v3/
+
+# Temporary verification files
+persistence-check.txt

@@ -81,13 +81,6 @@ def recover_pending_silver_batches(
         manifest_key=manifest_key,
     )
     
-    if state_file is not None:
-        pending_batches = get_pending_silver_batches(state_file)
-    else:
-        pending_batches = get_pending_silver_batches()
-        
-
-
     # Step 1: Restore the committed Silver dataset.
     if custom_config:
         restored = restore_committed_silver(
@@ -103,8 +96,11 @@ def recover_pending_silver_batches(
     else:
         manifest = read_silver_manifest()
 
-    # Step 3: Retrieve pending batches.
-    pending_batches = get_pending_silver_batches(state_file=None)
+    # Step 3: Retrieve pending batches from the correct ledger.
+    if state_file is not None:
+        pending_batches = get_pending_silver_batches(state_file)
+    else:
+        pending_batches = get_pending_silver_batches()
 
     if not pending_batches:
         logger.info("No pending Silver batches.")

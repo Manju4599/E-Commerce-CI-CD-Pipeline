@@ -1,5 +1,9 @@
+
 services:
   pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: ecommerce-pipeline:latest
     container_name: ecommerce-pipeline
     env_file:
