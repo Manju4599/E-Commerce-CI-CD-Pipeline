@@ -208,3 +208,44 @@ def upload_silver_orders():
         clean_orders,
         "silver/orders/orders_clean.csv",
     )
+
+def upload_artifact(file_path, s3_key, content_type):
+    """
+    Upload a file to S3 with SHA-256 metadata.
+
+    Supports different artifact formats such as CSV and Parquet.
+    """
+    file_path = Path(file_path)
+
+    if not file_path.is_file():
+        raise FileNotFoundError(
+            f"Artifact not found: {file_path}"
+        )
+
+    local_hash = calculate_sha256(file_path)
+
+    s3.upload_file(
+        str(file_path),
+        BUCKET_NAME,
+        s3_key,
+        ExtraArgs={
+            "ContentType": content_type,
+            "Metadata": {"sha256": local_hash},
+        },
+    )
+
+    response = s3.head_object(
+        Bucket=BUCKET_NAME,
+        Key=s3_key,
+    )
+
+    saved_hash = response.get(
+        "Metadata", {}
+    ).get("sha256")
+
+    if saved_hash != local_hash:
+        raise RuntimeError(
+            f"Artifact checksum verification failed: {s3_key}"
+        )
+
+    return local_hash

@@ -27,3 +27,4 @@ persistence-check.txt
 
 #AWS CREDENTIALS
 aws_login.txt
+data/integration_tests_v4/

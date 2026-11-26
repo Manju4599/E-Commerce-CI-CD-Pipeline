@@ -11,6 +11,7 @@ WATERMARK_FILE = PROJECT_ROOT / "data" / "state" / "watermarks.json"
 
 
 
+
 def load_watermark(
     table_name: str,
     watermark_file: Path | None = None,
@@ -18,11 +19,15 @@ def load_watermark(
     if watermark_file is None:
         watermark_file = WATERMARK_FILE
 
+    watermark_file = Path(watermark_file)
+
+    if not watermark_file.exists():
+        return 0
+
     with open(watermark_file, "r", encoding="utf-8") as file:
         watermarks = json.load(file)
 
     return watermarks.get(table_name, 0)
-
 
 def save_watermark(
     table_name: str,

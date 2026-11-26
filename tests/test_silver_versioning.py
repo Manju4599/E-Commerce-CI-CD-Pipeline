@@ -132,3 +132,137 @@ def test_verify_rejects_missing_manifest_fields():
     ):
 
         verify_silver_artifact(manifest)
+
+
+def test_verify_valid_csv_and_parquet_artifacts():
+    csv_content = b"order_id,amount\n109,500\n"
+    parquet_content = b"sample parquet bytes"
+
+    manifest = make_manifest(csv_content)
+    manifest["parquet_file"] = (
+        "silver/orders/orders_v001.parquet"
+    )
+    manifest["parquet_sha256"] = hashlib.sha256(
+        parquet_content
+    ).hexdigest()
+
+    with patch(
+        "src.silver_versioning.s3.get_object",
+        side_effect=[
+            {"Body": io.BytesIO(csv_content)},
+            {"Body": io.BytesIO(parquet_content)},
+        ],
+    ) as mock_get:
+
+        result = verify_silver_artifact(manifest)
+
+    assert result is True
+    assert mock_get.call_count == 2
+
+
+def test_verify_missing_parquet_artifact():
+    csv_content = b"order_id,amount\n109,500\n"
+    parquet_content = b"sample parquet bytes"
+
+    manifest = make_manifest(csv_content)
+    manifest["parquet_file"] = (
+        "silver/orders/orders_v001.parquet"
+    )
+    manifest["parquet_sha256"] = hashlib.sha256(
+        parquet_content
+    ).hexdigest()
+
+    missing_error = ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchKey",
+                "Message": "Object not found",
+            }
+        },
+        "GetObject",
+    )
+
+    with patch(
+        "src.silver_versioning.s3.get_object",
+        side_effect=[
+            {"Body": io.BytesIO(csv_content)},
+            missing_error,
+        ],
+    ):
+        result = verify_silver_artifact(manifest)
+
+    assert result is False
+
+
+def test_verify_corrupted_parquet_artifact():
+    csv_content = b"order_id,amount\n109,500\n"
+    expected_parquet = b"correct parquet bytes"
+    corrupted_parquet = b"corrupted parquet bytes"
+
+    manifest = make_manifest(csv_content)
+    manifest["parquet_file"] = (
+        "silver/orders/orders_v001.parquet"
+    )
+    manifest["parquet_sha256"] = hashlib.sha256(
+        expected_parquet
+    ).hexdigest()
+
+    with patch(
+        "src.silver_versioning.s3.get_object",
+        side_effect=[
+            {"Body": io.BytesIO(csv_content)},
+            {"Body": io.BytesIO(corrupted_parquet)},
+        ],
+    ):
+        result = verify_silver_artifact(manifest)
+
+    assert result is False
+
+
+def test_verify_legacy_csv_only_manifest():
+    content = b"legacy silver data"
+    manifest = make_manifest(content)
+
+    with patch(
+        "src.silver_versioning.s3.get_object",
+        return_value={"Body": io.BytesIO(content)},
+    ) as mock_get:
+
+        result = verify_silver_artifact(manifest)
+
+    assert result is True
+    mock_get.assert_called_once()
+
+
+def test_verify_rejects_incomplete_parquet_metadata():
+    content = b"silver data"
+    manifest = make_manifest(content)
+
+    manifest["parquet_file"] = (
+        "silver/orders/orders_v001.parquet"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="both parquet_file and parquet_sha256",
+    ):
+        verify_silver_artifact(manifest)
+
+
+def test_verify_corrupted_csv_with_parquet_manifest():
+    expected_csv = b"correct csv"
+    corrupted_csv = b"corrupted csv"
+
+    manifest = make_manifest(expected_csv)
+    manifest["parquet_file"] = (
+        "silver/orders/orders_v001.parquet"
+    )
+    manifest["parquet_sha256"] = "a" * 64
+
+    with patch(
+        "src.silver_versioning.s3.get_object",
+        return_value={"Body": io.BytesIO(corrupted_csv)},
+    ):
+        result = verify_silver_artifact(manifest)
+
+    assert result is False

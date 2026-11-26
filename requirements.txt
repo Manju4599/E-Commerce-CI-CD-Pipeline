@@ -4,4 +4,4 @@ pymysql
 python-dotenv
 pytest
 boto3
-
+pyarrow==26.0.1
