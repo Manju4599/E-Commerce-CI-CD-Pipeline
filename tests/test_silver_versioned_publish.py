@@ -7,6 +7,9 @@ from botocore.exceptions import ClientError
 
 from src.silver_versioning import publish_versioned_silver
 
+import hashlib
+from io import BytesIO
+
 
 def make_batch(batch_id="orders_109_110", last_id=110):
     return {
@@ -469,6 +472,137 @@ def test_parquet_upload_failure_retries_without_reuploading_csv(tmp_path):
     assert len(manifest_calls) == 1
     assert manifest_calls[0] == result
     assert mock_verify.call_count == 1
+
+
+def test_parquet_timeout_after_storage_reuses_existing_object(tmp_path):
+    silver_file = tmp_path / "orders_clean.csv"
+    silver_file.write_text(
+        "order_id,customer_id,order_date,amount\n"
+        "109,1,2026-11-27,100\n",
+        encoding="utf-8",
+    )
+
+    current_manifest = {
+        "silver_version": 1,
+        "file": "silver/orders/orders_v001.csv",
+        "sha256": "c" * 64,
+        "last_processed_order_id": 108,
+        "committed_batches": ["orders_107_108"],
+    }
+
+    # Simulated objects actually stored in S3.
+    stored_objects = {}
+
+    csv_upload_calls = []
+    parquet_upload_calls = []
+    manifest_calls = []
+
+    def store_object(file_path, s3_key):
+        content = file_path.read_bytes()
+        stored_objects[s3_key] = content
+
+    def fake_head_object(Bucket, Key):
+        if Key not in stored_objects:
+            raise make_missing_object_error()
+
+        return {
+            "Metadata": {
+                "sha256": hashlib.sha256(
+                    stored_objects[Key]
+                ).hexdigest()
+            }
+        }
+
+    def fake_get_object(Bucket, Key):
+        return {
+            "Body": BytesIO(stored_objects[Key])
+        }
+
+    def fake_csv_upload(file_path, s3_key):
+        csv_upload_calls.append(s3_key)
+        store_object(file_path, s3_key)
+
+    def fake_parquet_upload(file_path, s3_key, content_type):
+        parquet_upload_calls.append(s3_key)
+
+        # S3 stores the object before the client times out.
+        store_object(file_path, s3_key)
+
+        if len(parquet_upload_calls) == 1:
+            raise TimeoutError(
+                "Upload timed out after object storage"
+            )
+
+    def fake_write_manifest(manifest):
+        manifest_calls.append(manifest)
+
+    with (
+        patch(
+            "src.silver_versioning.read_silver_manifest",
+            return_value=current_manifest,
+        ),
+        patch(
+            "src.silver_versioning.s3.head_object",
+            side_effect=fake_head_object,
+        ),
+        patch(
+            "src.silver_versioning.s3.get_object",
+            side_effect=fake_get_object,
+        ),
+        patch(
+            "src.silver_versioning.upload_csv",
+            side_effect=fake_csv_upload,
+        ),
+        patch(
+            "src.silver_versioning.upload_artifact",
+            side_effect=fake_parquet_upload,
+        ),
+        patch(
+            "src.silver_versioning.write_silver_manifest",
+            side_effect=fake_write_manifest,
+        ),
+    ):
+        # First attempt: object is stored, but client reports timeout.
+        with pytest.raises(
+            TimeoutError,
+            match="Upload timed out",
+        ):
+            publish_versioned_silver(
+                silver_file,
+                [make_batch()],
+            )
+
+        # Both artifacts exist, but the manifest is not committed.
+        assert len(stored_objects) == 2
+        assert manifest_calls == []
+
+        # Retry: both existing objects should be reused.
+        result = publish_versioned_silver(
+            silver_file,
+            [make_batch()],
+        )
+
+    assert result["silver_version"] == 2
+
+    assert csv_upload_calls == [
+        "silver/orders/orders_v002.csv"
+    ]
+
+    assert parquet_upload_calls == [
+        "silver/orders/orders_v002.parquet"
+    ]
+
+    assert len(manifest_calls) == 1
+    assert manifest_calls[0] == result
+
+    # Confirm that the manifest checksums match the stored bytes.
+    assert result["sha256"] == hashlib.sha256(
+        stored_objects[result["file"]]
+    ).hexdigest()
+
+    assert result["parquet_sha256"] == hashlib.sha256(
+        stored_objects[result["parquet_file"]]
+    ).hexdigest()
 
 def test_manifest_write_failure_is_propagated(tmp_path):
 
