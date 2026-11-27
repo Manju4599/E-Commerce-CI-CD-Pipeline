@@ -314,6 +314,162 @@ def test_checksum_verification_failure_prevents_manifest_update(tmp_path):
     mock_write.assert_not_called()
     mock_parquet_upload.assert_called_once()
 
+def test_csv_upload_failure_stops_silver_publication(tmp_path):
+    silver_file = tmp_path / "orders_clean.csv"
+    silver_file.write_text("test data", encoding="utf-8")
+
+    with (
+        patch(
+            "src.silver_versioning.calculate_sha256",
+            return_value="a" * 64,
+        ),
+        patch(
+            "src.silver_versioning.read_silver_manifest",
+            return_value=None,
+        ),
+        patch(
+            "src.silver_versioning.s3.head_object",
+            side_effect=[
+                make_missing_object_error(),
+                make_missing_object_error(),
+            ],
+        ),
+        patch(
+            "src.silver_versioning.upload_csv",
+            side_effect=RuntimeError("CSV upload failed"),
+        ) as mock_upload,
+        patch(
+            "src.silver_versioning.upload_artifact",
+        ) as mock_parquet_upload,
+        patch(
+            "src.silver_versioning.verify_silver_artifact",
+        ) as mock_verify,
+        patch(
+            "src.silver_versioning.write_silver_manifest",
+        ) as mock_write,
+    ):
+        with pytest.raises(RuntimeError, match="CSV upload failed"):
+            publish_versioned_silver(
+                silver_file,
+                [make_batch()],
+            )
+
+    mock_upload.assert_called_once()
+    mock_parquet_upload.assert_not_called()
+    mock_verify.assert_not_called()
+    mock_write.assert_not_called()
+
+
+def test_parquet_upload_failure_retries_without_reuploading_csv(tmp_path):
+    silver_file = tmp_path / "orders_clean.csv"
+    silver_file.write_text(
+        "order_id,customer_id,order_date,amount\n"
+        "109,1,2026-11-27,100\n",
+        encoding="utf-8",
+    )
+
+    checksum = "a" * 64
+    parquet_checksum = "b" * 64
+
+    current_manifest = {
+        "silver_version": 1,
+        "file": "silver/orders/orders_v001.csv",
+        "sha256": "c" * 64,
+        "last_processed_order_id": 108,
+        "committed_batches": ["orders_107_108"],
+    }
+
+    existing_csv = {
+        "Metadata": {"sha256": checksum}
+    }
+
+    csv_upload_calls = []
+    parquet_upload_calls = []
+    manifest_calls = []
+
+    def fake_csv_upload(file_path, s3_key):
+        csv_upload_calls.append(s3_key)
+
+    def fake_parquet_upload(file_path, s3_key, content_type):
+        parquet_upload_calls.append(s3_key)
+
+        if len(parquet_upload_calls) == 1:
+            raise RuntimeError("Parquet upload failed")
+
+        return parquet_checksum
+
+    def fake_write_manifest(manifest):
+        manifest_calls.append(manifest)
+
+    with (
+        patch(
+            "src.silver_versioning.calculate_sha256",
+            side_effect=[checksum, parquet_checksum] * 2,
+        ),
+        patch(
+            "src.silver_versioning.read_silver_manifest",
+            return_value=current_manifest,
+        ),
+        patch(
+            "src.silver_versioning.s3.head_object",
+            side_effect=[
+                make_missing_object_error(),
+                make_missing_object_error(),
+                existing_csv,
+                make_missing_object_error(),
+            ],
+        ),
+        patch(
+            "src.silver_versioning.upload_csv",
+            side_effect=fake_csv_upload,
+        ),
+        patch(
+            "src.silver_versioning.upload_artifact",
+            side_effect=fake_parquet_upload,
+        ),
+        patch(
+            "src.silver_versioning.verify_silver_artifact",
+            return_value=True,
+        ) as mock_verify,
+        patch(
+            "src.silver_versioning.write_silver_manifest",
+            side_effect=fake_write_manifest,
+        ),
+    ):
+        # First attempt: CSV succeeds, Parquet fails.
+        with pytest.raises(
+            RuntimeError,
+            match="Parquet upload failed",
+        ):
+            publish_versioned_silver(
+                silver_file,
+                [make_batch()],
+            )
+
+        # Manifest must not be committed.
+        assert manifest_calls == []
+
+        # Second attempt: reuse CSV and upload Parquet.
+        result = publish_versioned_silver(
+            silver_file,
+            [make_batch()],
+        )
+
+    assert result["silver_version"] == 2
+
+    assert csv_upload_calls == [
+        "silver/orders/orders_v002.csv"
+    ]
+
+    assert parquet_upload_calls == [
+        "silver/orders/orders_v002.parquet",
+        "silver/orders/orders_v002.parquet",
+    ]
+
+    assert len(manifest_calls) == 1
+    assert manifest_calls[0] == result
+    assert mock_verify.call_count == 1
+
 def test_manifest_write_failure_is_propagated(tmp_path):
 
     silver_file = tmp_path / "orders_clean.csv"
@@ -474,68 +630,3 @@ def test_retry_reuses_orphaned_version_after_manifest_failure(tmp_path):
     assert manifest_calls[1] == result
     
     assert parquet_upload_calls == ["silver/orders/orders_v002.parquet"]
-    silver_file = tmp_path / "orders_clean.csv"
-    silver_file.write_text("test data", encoding="utf-8")
-
-    checksum = "a" * 64
-
-    current_manifest = {
-        "silver_version": 1,
-        "file": "silver/orders/orders_v001.csv",
-        "sha256": "b" * 64,
-        "last_processed_order_id": 108,
-        "committed_batches": ["orders_107_108"],
-    }
-
-    existing_object = {
-        "Metadata": {"sha256": checksum}
-    }
-
-    with (
-        patch(
-            "src.silver_versioning.calculate_sha256",
-            return_value=checksum,
-        ),
-        patch(
-            "src.silver_versioning.read_silver_manifest",
-            return_value=current_manifest,
-        ),
-        patch(
-            "src.silver_versioning.s3.head_object",
-            return_value=existing_object,
-        ),
-        patch(
-            "src.silver_versioning.upload_csv",
-        ) as mock_upload,
-        patch(
-            "src.silver_versioning.verify_silver_artifact",
-            return_value=True,
-        ),
-        patch(
-            "src.silver_versioning.write_silver_manifest",
-        ) as mock_write,
-        patch(
-            "src.silver_versioning.upload_artifact",
-        ) as mock_parquet_upload,
-    ):
-
-        result = publish_versioned_silver(
-            silver_file,
-            [make_batch()],
-        )
-
-    assert result["silver_version"] == 2
-
-    assert result["file"] == (
-        "silver/orders/orders_v002.csv"
-    )
-
-    assert "orders_109_110" in result["committed_batches"]
-
-    # Reuse the existing orphan instead of uploading again.
-    mock_upload.assert_not_called()
-    
-    mock_parquet_upload.assert_not_called()
-    
-    # Successfully publish the new manifest.
-    mock_write.assert_called_once_with(result)
